@@ -1,0 +1,72 @@
+<!doctype html>
+<html lang="th"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="referrer" content="no-referrer"><title>สแกน OMS Order</title>
+<style>*{box-sizing:border-box}body{margin:0;background:#f1f5f4;color:#173d32;font:16px system-ui,sans-serif}main{max-width:650px;margin:auto;padding:24px 16px}h1{font-size:28px}p{line-height:1.6}button,input{font:inherit;border-radius:12px;padding:14px;min-height:48px}button{border:0;background:#136b46;color:white;cursor:pointer}button:disabled{opacity:.5}input{width:100%;border:1px solid #b9c9c1;font-size:22px}video{display:block;width:100%;max-height:65vh;background:#111;border-radius:16px;margin:16px 0}#status{background:#e2eee6;padding:16px;border-radius:12px;overflow-wrap:anywhere}.actions{display:flex;gap:8px;flex-wrap:wrap}section{background:white;padding:20px;border-radius:16px;margin-top:20px}[hidden]{display:none!important}small{display:block;margin:12px 0;color:#52685c}</style></head>
+<body><main><small>OMS SCANNER · VERSION 4</small><h1>สแกนบาร์โค้ดออเดอร์</h1><p>กดเปิดกล้อง แล้วเล็งให้เห็นบาร์โค้ดครบทั้งแถบ</p>
+<p id="status" role="status" aria-live="polite">พร้อมเปิดกล้อง</p>
+<div class="actions"><button id="start">เปิดกล้องสแกน</button><button id="stop" hidden>หยุดกล้อง</button></div>
+<video id="video" muted playsinline hidden></video>
+<section id="result" hidden><label for="order">OMS Order ที่อ่านได้</label><input id="order" readonly><p>ตรวจสอบหมายเลขกับออเดอร์ก่อนบันทึกในฟอร์ม</p><div class="actions"><button id="send">ส่งเลขกลับฟอร์ม</button><button id="copy">คัดลอกหมายเลข</button></div><small>หากส่งกลับอัตโนมัติไม่ได้ ให้คัดลอกเลข กลับแท็บฟอร์ม แล้ววางในช่อง OMS Order</small></section>
+<small>อ่านบาร์โค้ดบนเครื่อง รูปไม่ถูกส่งไปบริการ OCR และหน้านี้ไม่บันทึกข้อมูลลงชีต</small></main>
+<script src="https://cdn.jsdelivr.net/npm/zxing-wasm@3.1.4/dist/iife/reader/index.js"></script>
+<script>
+'use strict';
+const $=id=>document.getElementById(id);
+const args=new URLSearchParams(location.hash.slice(1));
+const nonce=args.get('nonce')||'';
+let parentOrigin='',stream=null,generation=0,timer,starting=false,retryTimer,received=false;
+try{const u=new URL(args.get('parentOrigin'));if(u.protocol==='https:'&&(u.hostname==='script.google.com'||u.hostname.endsWith('.googleusercontent.com'))&&u.origin===args.get('parentOrigin'))parentOrigin=u.origin;}catch(ignore){}
+const linked=!!(parentOrigin&&/^[a-f0-9]{48}$/.test(nonce)&&window.opener);
+const orderPattern=/^HL[0-9]{13,14}$/;
+function status(text){$('status').textContent=text;}
+function stop(){generation++;clearTimeout(timer);if(stream)stream.getTracks().forEach(t=>t.stop());stream=null;$('video').srcObject=null;$('video').hidden=true;$('start').disabled=false;$('stop').hidden=true;}
+function sendResult(){
+ const order=$('order').value;
+ if(!orderPattern.test(order))return;
+ if(!linked||!window.opener||window.opener.closed){status('อ่านเลขแล้ว แต่เบราว์เซอร์ไม่ได้เชื่อมแท็บฟอร์ม กรุณาคัดลอกเลขแล้วกลับไปวาง');return;}
+ clearInterval(retryTimer);received=false;let attempts=0;
+ const send=()=>{if(received)return;try{window.opener.postMessage({type:'oms-scan-result',nonce,order},parentOrigin);}catch(ignore){};attempts++;if(attempts>=8){clearInterval(retryTimer);if(!received)status('ยังไม่ได้รับการยืนยันจากฟอร์ม ให้กลับแท็บฟอร์มตรวจช่อง OMS หรือคัดลอกเลขไปวาง');}};
+ status('กำลังส่งหมายเลขกลับฟอร์ม…');send();retryTimer=setInterval(send,500);
+}
+window.addEventListener('message',event=>{
+ if(!linked||event.origin!==parentOrigin||event.source!==window.opener||event.data?.type!=='oms-scan-ack'||event.data.nonce!==nonce)return;
+ received=true;clearInterval(retryTimer);status('เติมหมายเลขในฟอร์มแล้ว กลับไปตรวจสอบและบันทึกได้');window.close();
+});
+$('send').onclick=sendResult;
+$('copy').onclick=async()=>{try{await navigator.clipboard.writeText($('order').value);status('คัดลอกแล้ว กลับแท็บฟอร์มแล้ววางในช่อง OMS Order');}catch(e){$('order').focus();$('order').select();status('กดค้างที่หมายเลขแล้วเลือกคัดลอก');}};
+$('stop').onclick=()=>{stop();status('หยุดกล้องแล้ว');};
+$('start').onclick=async()=>{
+ if(starting||stream)return;starting=true;$('start').disabled=true;clearInterval(retryTimer);$('result').hidden=true;received=false;
+ let acquired;
+ try{
+  if(window.top!==window.self)throw Error('กรุณาเปิดหน้าสแกนในแท็บใหม่โดยตรง');
+  if(typeof ZXingWASM==='undefined')throw Error('โหลดตัวอ่านไม่ได้ กรุณารีเฟรชหรือตรวจอินเทอร์เน็ต');
+  if(!navigator.mediaDevices?.getUserMedia)throw Error('ไม่รองรับกล้อง กรุณาเปิด URL HTTPS นี้ใน Safari/Chrome');
+  status('กรุณาอนุญาตกล้อง');
+  acquired=await navigator.mediaDevices.getUserMedia({audio:false,video:{facingMode:{ideal:'environment'},width:{ideal:1920},height:{ideal:1080}}});
+  if(document.hidden)throw Error('กลับมาที่หน้าสแกนแล้วกดเปิดกล้องอีกครั้ง');
+  stream=acquired;const video=$('video');video.srcObject=stream;video.hidden=false;await video.play();$('stop').hidden=false;
+  const current=++generation,c=document.createElement('canvas');let previous='',hits=0;
+  status('เล็งให้เห็นบาร์โค้ดครบแถบ รวมพื้นที่ว่างด้านซ้ายและขวา');
+  async function frame(){
+   if(!stream||current!==generation)return;
+   try{
+    if(video.readyState>=2&&video.videoWidth){
+     const scale=Math.min(1,1920/Math.max(video.videoWidth,video.videoHeight));c.width=Math.round(video.videoWidth*scale);c.height=Math.round(video.videoHeight*scale);
+     const x=c.getContext('2d',{willReadFrequently:true});x.drawImage(video,0,0,c.width,c.height);
+     const results=await ZXingWASM.readBarcodes(x.getImageData(0,0,c.width,c.height),{formats:['Code128','Code39','Code93'],tryHarder:true,tryRotate:true});
+     if(current!==generation||!stream)return;
+     const matches=[...new Set(results.map(r=>r.text.trim().toUpperCase()).filter(t=>orderPattern.test(t)))];
+     if(matches.length===1){const value=matches[0];hits=value===previous?hits+1:1;previous=value;if(hits>=2){stop();$('order').value=value;$('result').hidden=false;sendResult();return;}}
+     else{previous='';hits=0;if(matches.length>1)status('พบหลายออเดอร์ เล็งให้เห็นบาร์โค้ดเป้าหมายเพียงอันเดียว');}
+    }
+   }catch(e){if(current===generation){stop();status('อ่านกล้องไม่สำเร็จ: '+String(e.message||e).slice(0,200));}return;}
+   if(current===generation&&stream)timer=setTimeout(frame,180);
+  }
+  timer=setTimeout(frame,0);
+ }catch(e){if(acquired)acquired.getTracks().forEach(t=>t.stop());stop();status('เปิดกล้องไม่ได้ ['+(e.name||'Error')+']: '+String(e.message||e).slice(0,220));}
+ finally{starting=false;if(!stream)$('start').disabled=false;}
+};
+document.addEventListener('visibilitychange',()=>{if(document.hidden&&stream)stop();});
+window.addEventListener('pagehide',()=>{stop();clearInterval(retryTimer);});
+if(!linked)status('เปิดกล้องเพื่อทดสอบได้ เมื่ออ่านสำเร็จให้คัดลอกเลข หรือเปิดหน้านี้จากปุ่มสแกนในฟอร์มเพื่อส่งกลับอัตโนมัติ');
+</script></body></html>
